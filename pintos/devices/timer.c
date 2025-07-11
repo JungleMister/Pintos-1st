@@ -28,6 +28,7 @@ static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
+static struct list sleep_list; // Sleep list
 
 /* Sets up the 8254 Programmable Interval Timer (PIT) to
    interrupt PIT_FREQ times per second, and registers the
@@ -43,6 +44,7 @@ timer_init (void) {
 	outb (0x40, count >> 8);
 
 	intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+	list_init(&sleep_list); // sleep_list init
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -87,14 +89,32 @@ timer_elapsed (int64_t then) {
 	return timer_ticks () - then;
 }
 
-/* Suspends execution for approximately TICKS timer ticks. */
+/* Suspends execution for approximately TICKS timer ticks. 조건 검증 및 위임(thread_sleep()에게)만 실행*/
 void
 timer_sleep (int64_t ticks) {
-	int64_t start = timer_ticks ();
+    if (ticks <= 0)
+        return;
+    thread_sleep(ticks);
+}
 
-	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+/* 두 스레드의 wake_tick 값을 비교하여 정렬 기준을 제공하는 함수 */
+bool wake_tick_less(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+    struct thread *t1 = list_entry(a, struct thread, elem);
+    struct thread *t2 = list_entry(b, struct thread, elem);
+    return t1->wake_tick < t2->wake_tick;
+}
+
+/* 현재 실행 중인 스레드를 지정된 ticks만큼 잠들게 만듦, 현재시간 + 사용자정의 tick값, 잠 == BLOCKED */
+void thread_sleep(int64_t ticks) {
+    struct thread *curr = thread_current();
+    enum intr_level old_level = intr_disable(); // interrupt off
+
+    curr->wake_tick = timer_ticks() + ticks;
+    list_insert_ordered(&sleep_list, &curr->elem,
+                       (list_less_func *) wake_tick_less, NULL);
+    thread_block(); // BLOCKED 상태로 전환
+
+    intr_set_level(old_level); // interrupt 복원
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -121,10 +141,20 @@ timer_print_stats (void) {
 	printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
 
-/* Timer interrupt handler. */
+/* 타이머 인터럽트 발생 시 호출되는 인터럽트 핸들러, 주기적으로 호출되어 시스템 시계(ticks)를 1 증가시켜서 현재 시각에 맞춰서 잠든 스레드를 깨움 */
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
+
+	while (!list_empty(&sleep_list)) {
+        struct thread *t = list_entry(list_front(&sleep_list), struct thread, elem);
+        if (t->wake_tick > ticks)
+            break;
+
+        list_pop_front(&sleep_list);
+        thread_unblock(t);
+    }
+
 	thread_tick ();
 }
 

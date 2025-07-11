@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "random.h": "c",
+        "stddef.h": "c",
+        "string.h": "c",
+        "flags.h": "c",
+        "thread.h": "c",
+        "timer.h": "c",
+        "interrupt.h": "c"
+    }
+}
