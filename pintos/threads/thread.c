@@ -211,7 +211,16 @@ thread_create (const char *name, int priority,
 	t->tf.eflags = FLAG_IF;
 
 	/* Add to run queue. */
-	thread_unblock (t);
+	if (thread_current()->priority > t->priority){
+		// 큐에 추가만
+		thread_unblock (t);
+	}
+	else {
+		// 새로운 스레드 우선순위가 높다면 실행
+		// 큐에 추가 후 현재 스레드를 준비 상태로
+		thread_unblock (t);
+		thread_yield();
+	}
 
 	return tid;
 }
@@ -301,6 +310,7 @@ thread_exit (void) {
 
 /* Yields the CPU.  The current thread is not put to sleep and
    may be scheduled again immediately at the scheduler's whim. */
+// 현재 스레드를 대기 큐에 넣어주는 함수
 void
 thread_yield (void) {
 	struct thread *curr = thread_current ();
@@ -363,7 +373,15 @@ thread_compare_priority (struct list_elem *a, struct list_elem *b, void *aux UNU
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
-	thread_current ()->priority = new_priority;
+	// 우선순위가 바뀌면 더 높은 우선순위의 스레드가 실행되도록 한다.
+	struct thread *cur = thread_current ();
+	
+	cur->priority = new_priority;
+	int fisrt_priority = list_entry(list_front (&ready_list), struct thread, elem)->priority; // 준비중인 스레드중 가장 높은 우선순위 가져옴
+
+	if (fisrt_priority > new_priority){
+		thread_yield();
+	}
 }
 
 /* Returns the current thread's priority. */
@@ -516,8 +534,8 @@ do_iret (struct intr_frame *tf) {
    added at the end of the function. */
 static void
 thread_launch (struct thread *th) {
-	uint64_t tf_cur = (uint64_t) &running_thread ()->tf;
-	uint64_t tf = (uint64_t) &th->tf;
+	uint64_t tf_cur = (uint64_t) &running_thread ()->tf; 	// 현재 실행중인 스레드의 프레임을 가져온다.
+	uint64_t tf = (uint64_t) &th->tf;						// 받아온 스레드 프레임을 가져온다.
 	ASSERT (intr_get_level () == INTR_OFF);
 
 	/* The main switching logic.
