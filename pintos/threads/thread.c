@@ -79,6 +79,14 @@ static tid_t allocate_tid (void);
 // setup temporal gdt first.
 static uint64_t gdt[3] = { 0, 0x00af9a000000ffff, 0x00cf92000000ffff };
 
+static bool thread_priority_more(const struct list_elem *a,
+                                 const struct list_elem *b,
+                                 void *aux UNUSED) {
+    const struct thread *t1 = list_entry(a, struct thread, elem);
+    const struct thread *t2 = list_entry(b, struct thread, elem);
+    return t1->priority > t2->priority;
+}
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -207,6 +215,10 @@ thread_create (const char *name, int priority,
 	/* Add to run queue. */
 	thread_unblock (t);
 
+	if (thread_current()->priority < priority) {
+        thread_yield();
+    }
+
 	return tid;
 }
 
@@ -234,15 +246,20 @@ thread_block (void) {
    update other data. */
 void
 thread_unblock (struct thread *t) {
-	enum intr_level old_level;
+    enum intr_level old_level;
 
-	ASSERT (is_thread (t));
+    ASSERT(is_thread(t));              // 유효한 스레드 포인터인지 확인
+    old_level = intr_disable();        // 인터럽트 비활성화 (원자성 확보)
 
-	old_level = intr_disable ();
-	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
-	t->status = THREAD_READY;
-	intr_set_level (old_level);
+    ASSERT(t->status == THREAD_BLOCKED);  // BLOCKED 상태여야 함
+
+    // ready_list에 우선순위(priority) 기준으로 삽입
+    list_insert_ordered(&ready_list, &t->elem, thread_priority_more, NULL);
+
+    // 스레드 상태를 READY로 변경
+    t->status = THREAD_READY;
+
+    intr_set_level(old_level);         // 인터럽트 상태 복원
 }
 
 /* Returns the name of the running thread. */
@@ -295,24 +312,53 @@ thread_exit (void) {
 /* Yields the CPU.  The current thread is not put to sleep and
    may be scheduled again immediately at the scheduler's whim. */
 void
-thread_yield (void) {
-	struct thread *curr = thread_current ();
-	enum intr_level old_level;
+thread_yield(void) {
+    struct thread *curr = thread_current();
+    enum intr_level old_level;
 
-	ASSERT (!intr_context ());
+    ASSERT(!intr_context());  // 인터럽트 핸들러 내에서는 호출 금지
 
-	old_level = intr_disable ();
-	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
-	do_schedule (THREAD_READY);
-	intr_set_level (old_level);
+    old_level = intr_disable();  // 인터럽트 비활성화 (원자성 확보)
+
+    // 현재 스레드가 idle이 아닌 경우, ready_list에 다시 삽입
+    if (curr != idle_thread)
+        list_insert_ordered(&ready_list, &curr->elem, thread_priority_more, NULL);
+
+    // 현재 스레드를 READY 상태로 전환하고 스케줄링 수행
+    do_schedule(THREAD_READY);
+
+    intr_set_level(old_level);  // 인터럽트 상태 복구
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
-	thread_current ()->priority = new_priority;
+    // 이전 인터럽트 상태를 저장하고 인터럽트를 비활성화한다
+    // 스레드의 우선순위 변경 중 다른 스레드나 인터럽트에 의해 방해받지 않도록 보장한다
+   enum intr_level old_level = intr_disable();
+
+    // 현재 실행 중인 스레드의 포인터를 가져온다
+   struct thread *curr = thread_current();
+    // 현재 우선순위를 나중에 비교하기 위해 저장한다
+   int old_priority = curr->priority;
+    // 스레드의 우선순위를 새로운 우선순위로 설정한다
+   curr->priority = new_priority;
+
+    // 현재 스레드의 우선순위가 이전보다 낮아졌는지 확인한다
+    // 우선순위가 낮아졌을 때만 다른 스레드에게 CPU를 양보(선점)할 가능성이 생긴다
+   if (old_priority > new_priority) {
+        // 준비 큐(ready_list)가 비어있지 않고, 준비 큐의 맨 앞에 있는 (가장 높은 우선순위를 가진) 스레드의 우선순위가 현재 스레드의 새로운 우선순위보다 높은지 확인한다
+    if (!list_empty(&ready_list) && 
+      list_entry(list_front(&ready_list), struct thread, elem)->priority > curr->priority) {
+            // 위 조건이 참이면, 현재 스레드보다 더 높은 우선순위의 스레드가 실행을 기다리고 있다는 의미이므로, 현재 스레드는 CPU를 즉시 양보한다
+      thread_yield();
+    }
+  }
+  
+    // thread_yield가 호출되지 않았거나, 나중에 스케줄러에 의해 이 스레드가 다시 실행될 때 이전에 저장해둔 인터럽트 상태로 복원한다
+   intr_set_level(old_level);
 }
+
 
 /* Returns the current thread's priority. */
 int
