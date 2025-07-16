@@ -137,6 +137,20 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;					// 전역 시간 1증가
 	thread_wakeup(ticks);		// 스레드 깨우기
+
+	if (thread_mlfqs){
+		mlfqs_increase_recent_cpu();// recent_cpu 증가
+
+		if (timer_ticks() % TIMER_FREQ == 0){
+			mlfqs_recalc_recent_cpu(); // recent_cpu 계산
+			mlfqs_calc_load_avg(); // load_avg 계산
+		}
+		if (timer_ticks() % 4 == 0){
+			mlfqs_recalc_priority();// priority 계산
+		}
+	}
+
+
 	thread_tick ();				// 현재 스레드 아이들 tick 증가
 }
 
