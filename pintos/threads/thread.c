@@ -87,6 +87,8 @@ static bool thread_priority_more(const struct list_elem *a,
     return t1->priority > t2->priority;
 }
 
+
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -354,11 +356,80 @@ thread_set_priority (int new_priority) {
       thread_yield();
     }
   }
+  	refresh_priority();
+	test_max_priority();
   
     // thread_yield가 호출되지 않았거나, 나중에 스케줄러에 의해 이 스레드가 다시 실행될 때 이전에 저장해둔 인터럽트 상태로 복원한다
    intr_set_level(old_level);
 }
 
+void
+test_max_priority (void) {
+	if (thread_current ()->status == THREAD_RUNNING
+		&& !list_empty (&ready_list)
+		&& thread_current ()->priority < list_entry (list_front (&ready_list),
+													  struct thread, elem)->priority) {
+		thread_yield ();
+	}
+}
+
+void 
+donate_priority (void)
+{
+	int cnt = 0;
+	struct thread *t = thread_current();
+	int cur_priority = t->priority;
+ 
+	while ( cnt < 9 )
+	{
+		cnt++;
+		if (t->wait_on_lock == NULL) 
+		{
+			break;
+		}
+		
+		t = t->wait_on_lock->holder;
+		t->priority = cur_priority;
+	}
+}
+
+void 
+remove_with_lock (struct lock *lock)
+{
+	struct thread *t = thread_current();
+	struct list_elem *e = list_begin(&t->donations);
+ 
+	for (e ; e != list_end((&t->donations));)
+	{
+		struct thread *cur = list_entry(e, struct thread, donation_elem);
+		if (cur->wait_on_lock == lock)
+		{
+			e = list_remove(e);
+		}
+		else
+		{
+			e = list_next(e);
+		}
+	}
+}
+
+void 
+refresh_priority (void)
+{
+	struct thread *curr = thread_current();
+	curr->priority = curr->init_priority;
+	
+	if (list_empty(&curr->donations) == false)
+	{
+		list_sort(&curr->donations, &thread_priority_more, NULL);
+		struct thread *high;
+		high = list_entry(list_front(&curr->donations), struct thread, donation_elem);
+		if (high->priority > curr->priority)
+		{
+			curr->priority = high->priority;
+		}
+	}
+}
 
 /* Returns the current thread's priority. */
 int
@@ -455,6 +526,10 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
 	t->magic = THREAD_MAGIC;
+
+	t->init_priority = priority;
+	list_init(&t->donations);
+	t->wait_on_lock = NULL;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

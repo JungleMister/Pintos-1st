@@ -97,6 +97,11 @@ struct thread {
 
 	int64_t wake_tick; // wake tick value
 
+	int init_priority;
+	struct lock *wait_on_lock;
+	struct list donations;
+	struct list_elem donation_elem;
+
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
@@ -143,6 +148,11 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+void test_max_priority (void);
+void donate_priority (void);
+void remove_with_lock (struct lock *);
+void refresh_priority (void);
 
 void do_iret (struct intr_frame *tf);
 
