@@ -79,7 +79,7 @@ static tid_t allocate_tid (void);
 // setup temporal gdt first.
 static uint64_t gdt[3] = { 0, 0x00af9a000000ffff, 0x00cf92000000ffff };
 
-static bool thread_priority_more(const struct list_elem *a,
+bool thread_priority_more(const struct list_elem *a,
                                  const struct list_elem *b,
                                  void *aux UNUSED) {
     const struct thread *t1 = list_entry(a, struct thread, elem);
@@ -119,6 +119,7 @@ thread_init (void) {
 	lock_init (&tid_lock);
 	list_init (&ready_list);
 	list_init (&destruction_req);
+	
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
@@ -213,6 +214,7 @@ thread_create (const char *name, int priority,
 	t->tf.ss = SEL_KDSEG;
 	t->tf.cs = SEL_KCSEG;
 	t->tf.eflags = FLAG_IF;
+	
 
 	/* Add to run queue. */
 	thread_unblock (t);
@@ -248,21 +250,29 @@ thread_block (void) {
    update other data. */
 void
 thread_unblock (struct thread *t) {
-    enum intr_level old_level;
+    enum intr_level old_level = intr_disable ();
+    ASSERT (is_thread (t));
+    ASSERT (t->status == THREAD_BLOCKED);
 
-    ASSERT(is_thread(t));              // 유효한 스레드 포인터인지 확인
-    old_level = intr_disable();        // 인터럽트 비활성화 (원자성 확보)
-
-    ASSERT(t->status == THREAD_BLOCKED);  // BLOCKED 상태여야 함
-
-    // ready_list에 우선순위(priority) 기준으로 삽입
-    list_insert_ordered(&ready_list, &t->elem, thread_priority_more, NULL);
-
-    // 스레드 상태를 READY로 변경
+    list_insert_ordered (&ready_list, &t->elem, thread_priority_more, NULL);
     t->status = THREAD_READY;
 
-    intr_set_level(old_level);         // 인터럽트 상태 복원
+    // ❌ 이 코드는 삭제해야 함
+    /*
+    if (t != thread_current() &&
+        t->priority > thread_current()->priority) {
+        if (intr_context())
+            intr_yield_on_return ();
+        else
+            thread_yield ();
+    }
+    */
+
+    intr_set_level (old_level);
 }
+
+
+
 
 /* Returns the name of the running thread. */
 const char *
@@ -373,25 +383,38 @@ test_max_priority (void) {
 	}
 }
 
-void 
-donate_priority (void)
-{
-	int cnt = 0;
-	struct thread *t = thread_current();
-	int cur_priority = t->priority;
- 
-	while ( cnt < 9 )
-	{
-		cnt++;
-		if (t->wait_on_lock == NULL) 
-		{
-			break;
-		}
-		
-		t = t->wait_on_lock->holder;
-		t->priority = cur_priority;
-	}
+void
+donate_priority(void) {
+    struct thread *curr = thread_current(); // 현재 스레드 (기부자)
+    struct lock *lock_waiting_on;
+    struct thread *lock_holder;
+    int donated_prio = curr->priority;
+
+    int depth = 0;                      // 최대 기부 깊이 제한
+    const int MAX_DONATION_DEPTH = 8;  // Pintos 관례적으로 8단계
+
+    while (curr->wait_on_lock != NULL && depth < MAX_DONATION_DEPTH) {
+        lock_waiting_on = curr->wait_on_lock;
+        lock_holder = lock_waiting_on->holder;
+
+        // 🔒 소유자가 없거나 자기 자신이면 중단 (panic 방지)
+        if (lock_holder == NULL || lock_holder == curr) {
+            break;
+        }
+
+        // 🔁 기부 필요 시 수행
+        if (donated_prio > lock_holder->priority) {
+            lock_holder->priority = donated_prio;
+        } else {
+            break;
+        }
+
+        // 다음 기부 대상으로 진행
+        curr = lock_holder;
+        depth++;
+    }
 }
+
 
 void 
 remove_with_lock (struct lock *lock)
@@ -526,10 +549,11 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
 	t->magic = THREAD_MAGIC;
-
+	list_init(&t->locks);
 	t->init_priority = priority;
 	list_init(&t->donations);
 	t->wait_on_lock = NULL;
+	
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

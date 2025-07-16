@@ -59,20 +59,20 @@ sema_init (struct semaphore *sema, unsigned value) {
    sema_down function. */
 void
 sema_down (struct semaphore *sema) {
-	enum intr_level old_level;
+    enum intr_level old_level;
 
-	ASSERT (sema != NULL);
-	ASSERT (!intr_context ());
+    ASSERT (sema != NULL);
+    ASSERT (!intr_context ());
 
-	old_level = intr_disable ();
-	while (sema->value == 0) {
-		list_push_back (&sema->waiters, &thread_current ()->elem);
-		thread_block ();
-	}
-	sema->value--;
-	intr_set_level (old_level);
+    old_level = intr_disable ();
+    while (sema->value == 0) {
+        // thread_priority_more는 thread.c에 정의된 함수로, 두 스레드의 우선순위를 비교하여 정렬하는 데 사용됩니다.
+        list_insert_ordered (&sema->waiters, &thread_current ()->elem, thread_priority_more, NULL); // 이 부분을 수정
+        thread_block ();
+    }
+    sema->value--;
+    intr_set_level (old_level);
 }
-
 /* Down or "P" operation on a semaphore, but only if the
    semaphore is not already 0.  Returns true if the semaphore is
    decremented, false otherwise.
@@ -104,17 +104,24 @@ sema_try_down (struct semaphore *sema) {
    This function may be called from an interrupt handler. */
 void
 sema_up (struct semaphore *sema) {
-	enum intr_level old_level;
+    enum intr_level old_level = intr_disable ();
+    struct thread *unblocked = NULL;
 
-	ASSERT (sema != NULL);
+    if (!list_empty (&sema->waiters)) {
+        list_sort (&sema->waiters, thread_priority_more, NULL);
+        unblocked = list_entry (list_pop_front (&sema->waiters),
+                                struct thread, elem);
+        thread_unblock (unblocked);
+    }
 
-	old_level = intr_disable ();
-	if (!list_empty (&sema->waiters))
-		thread_unblock (list_entry (list_pop_front (&sema->waiters),
-					struct thread, elem));
-	sema->value++;
-	intr_set_level (old_level);
+    sema->value++;
+    intr_set_level (old_level);
+
+    if (!intr_context())
+        test_max_priority();
 }
+
+
 
 static void sema_test_helper (void *sema_);
 
@@ -184,21 +191,28 @@ lock_init (struct lock *lock) {
    we need to sleep. */
 void
 lock_acquire (struct lock *lock) {
-	ASSERT (lock != NULL);
-	ASSERT (!intr_context ());
-	ASSERT (!lock_held_by_current_thread (lock));
+    ASSERT (lock != NULL);
+    ASSERT (!intr_context ());
 
-	struct thread *t = thread_current();
-	if (lock->holder != NULL)
-	{
-		t->wait_on_lock = lock;
-		list_push_back(&lock->holder->donations, &t->donation_elem);
-		donate_priority();
-	}
-	sema_down (&lock->semaphore);
-	t->wait_on_lock = NULL;
-	lock->holder = t;
+    struct thread *curr = thread_current();
+
+    if (lock_held_by_current_thread(lock)) {
+        return;
+    }
+
+    // wait_on_lock 설정 및 priority donation 호출
+    if (lock->holder != NULL && !thread_mlfqs) {
+        curr->wait_on_lock = lock;
+        donate_priority();
+    }
+
+    sema_down(&lock->semaphore);
+    curr->wait_on_lock = NULL;
+    lock->holder = curr;
+    list_push_back(&curr->locks, &lock->elem);
 }
+
+
 
 /* Tries to acquires LOCK and returns true if successful or false
    on failure.  The lock must not already be held by the current
@@ -227,12 +241,20 @@ lock_try_acquire (struct lock *lock) {
    handler. */
 void
 lock_release (struct lock *lock) {
-	ASSERT (lock != NULL);
-	ASSERT (lock_held_by_current_thread (lock));
+    ASSERT (lock != NULL);
+    ASSERT (lock_held_by_current_thread(lock));
 
-	lock->holder = NULL;
-	sema_up (&lock->semaphore);
+    struct thread *curr = thread_current();
+
+    list_remove(&lock->elem);
+    remove_with_lock(lock);
+    refresh_priority();
+
+    lock->holder = NULL;
+    sema_up(&lock->semaphore);
 }
+
+
 
 /* Returns true if the current thread holds LOCK, false
    otherwise.  (Note that testing whether some other thread holds
@@ -282,18 +304,19 @@ cond_init (struct condition *cond) {
    we need to sleep. */
 void
 cond_wait (struct condition *cond, struct lock *lock) {
-	struct semaphore_elem waiter;
+    struct semaphore_elem waiter;
 
-	ASSERT (cond != NULL);
-	ASSERT (lock != NULL);
-	ASSERT (!intr_context ());
-	ASSERT (lock_held_by_current_thread (lock));
+    ASSERT (cond != NULL);
+    ASSERT (lock != NULL);
+    ASSERT (!intr_context ());
+    ASSERT (lock_held_by_current_thread (lock));
 
-	sema_init (&waiter.semaphore, 0);
-	list_push_back (&cond->waiters, &waiter.elem);
-	lock_release (lock);
-	sema_down (&waiter.semaphore);
-	lock_acquire (lock);
+    sema_init (&waiter.semaphore, 0);
+    // thread_priority_more를 사용하여 우선순위 순으로 삽입
+    list_insert_ordered (&cond->waiters, &waiter.elem, thread_priority_more, NULL); // 이 부분을 수정
+    lock_release (lock);
+    sema_down (&waiter.semaphore);
+    lock_acquire (lock);
 }
 
 /* If any threads are waiting on COND (protected by LOCK), then

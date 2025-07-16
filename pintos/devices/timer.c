@@ -144,18 +144,37 @@ timer_print_stats (void) {
 /* 타이머 인터럽트 발생 시 호출되는 인터럽트 핸들러, 주기적으로 호출되어 시스템 시계(ticks)를 1 증가시켜서 현재 시각에 맞춰서 잠든 스레드를 깨움 */
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
-	ticks++;
+    /* 1) 인터럽트 비활성화 */
+    enum intr_level old_level = intr_disable ();
 
-	while (!list_empty(&sleep_list)) {
-        struct thread *t = list_entry(list_front(&sleep_list), struct thread, elem);
+    /* 2) 시스템 틱 증가 */
+    ticks++;
+
+    /* 3) sleep_list에서 깨어날 스레드 모두 꺼내기 */
+    bool should_yield = false;
+    while (!list_empty (&sleep_list)) {
+        struct thread *t =
+            list_entry (list_front (&sleep_list), struct thread, elem);
         if (t->wake_tick > ticks)
             break;
+        list_pop_front (&sleep_list);
+        thread_unblock (t);  /* :contentReference[oaicite:0]{index=0} */
 
-        list_pop_front(&sleep_list);
-        thread_unblock(t);
+        /*  깨운 스레드가 더 높은 우선순위면,
+            interrupt 컨텍스트에서 돌아올 때 한 번만 선점 예약 */
+        if (t->priority > thread_current ()->priority)
+            should_yield = true;
     }
 
-	thread_tick ();
+    /* 4) time‑slice 검사 (4틱마다) */
+    thread_tick ();  /* :contentReference[oaicite:1]{index=1} */
+
+    /* 5) 깨어난 스레드가 우선권이 더 높다면, 한 번만 yield_on_return */
+    if (should_yield)
+        intr_yield_on_return ();
+
+    /* 6) 인터럽트 복원 */
+    intr_set_level (old_level);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

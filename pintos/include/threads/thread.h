@@ -98,6 +98,7 @@ struct thread {
 	int64_t wake_tick; // wake tick value
 
 	int init_priority;
+	struct list locks;
 	struct lock *wait_on_lock;
 	struct list donations;
 	struct list_elem donation_elem;
@@ -127,6 +128,10 @@ void thread_start (void);
 
 void thread_tick (void);
 void thread_print_stats (void);
+
+bool thread_priority_more(const struct list_elem *a,
+                                 const struct list_elem *b,
+                                 void *aux UNUSED);
 
 typedef void thread_func (void *aux);
 tid_t thread_create (const char *name, int priority, thread_func *, void *);
