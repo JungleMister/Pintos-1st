@@ -198,6 +198,11 @@ lock_init (struct lock *lock) {
 // 락 획득, 영역이 lock이 된 상태가 아니라면 현재 쓰레드에게 할당해주고 세마포어 value 1감소
 void
 lock_acquire (struct lock *lock) {
+	if (thread_mlfqs){
+		sema_down (&lock->semaphore);
+		lock->holder = thread_current ();
+		return ;
+	}
 	/*
 	증여자들을 우선순위에 따라 정렬
 	*/
@@ -250,6 +255,10 @@ lock_try_acquire (struct lock *lock) {
 // 쓰레드가 종료 후 lock 해제
 void
 lock_release (struct lock *lock) {
+	if (thread_mlfqs){
+		sema_up (&lock->semaphore);
+    	return ;
+	}
 	ASSERT (lock != NULL);
 	ASSERT (lock_held_by_current_thread (lock));
 
