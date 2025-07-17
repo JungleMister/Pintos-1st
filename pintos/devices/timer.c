@@ -73,10 +73,10 @@ timer_calibrate (void) {
 /* Returns the number of timer ticks since the OS booted. */
 int64_t
 timer_ticks (void) {
-	enum intr_level old_level = intr_disable ();
-	int64_t t = ticks;
-	intr_set_level (old_level);
-	barrier ();
+	enum intr_level old_level = intr_disable (); 	// 인터럽트 비활성화
+	int64_t t = ticks; 								// 틱 설정
+	intr_set_level (old_level); 					// 인터럽트 설정 ? 비설정 현재는 해제
+	barrier (); 									// 배리어 이전의 모든 메모리 읽기/쓰기 작업이 배리어 이후의 작업보다 먼저 완료됨
 	return t;
 }
 
@@ -84,17 +84,23 @@ timer_ticks (void) {
    should be a value once returned by timer_ticks(). */
 int64_t
 timer_elapsed (int64_t then) {
-	return timer_ticks () - then;
+	return timer_ticks () - then;					// 경과된 시간
 }
 
 /* Suspends execution for approximately TICKS timer ticks. */
+/*
+필요 수정 사항
+현재 스레드를 ready_list가 아닌 sleep_list에 넣어준다.
+sleep_list에 넣을 때 스레드 block
+*/
 void
 timer_sleep (int64_t ticks) {
-	int64_t start = timer_ticks ();
+	// int64_t start = timer_ticks ();
 
-	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+	// ASSERT (intr_get_level () == INTR_ON);			// 인터럽트가 켜진 상태
+	// while (timer_elapsed (start) < ticks)
+	// 	thread_yield ();								// 현재 스레드를 다시 스케줄러에 넣어주는 함수
+	thread_sleep(ticks);								// 이렇게 할거면 아예 thread_sleep만 쓰는게 낫지 않나? 싶음...
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -120,12 +126,32 @@ void
 timer_print_stats (void) {
 	printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
-
+
 /* Timer interrupt handler. */
+/*
+필요 수정 사항
+interrupt된 스레드들 아이들 tick 증가 필요
+wake up time 도달시 block을 해제
+*/
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
-	ticks++;
-	thread_tick ();
+	ticks++;					// 전역 시간 1증가
+	thread_wakeup(ticks);		// 스레드 깨우기
+
+	if (thread_mlfqs){
+		mlfqs_increase_recent_cpu();// recent_cpu 증가
+
+		if (timer_ticks() % TIMER_FREQ == 0){
+			mlfqs_recalc_recent_cpu(); // recent_cpu 계산
+			mlfqs_calc_load_avg(); // load_avg 계산
+		}
+		if (timer_ticks() % 4 == 0){
+			mlfqs_recalc_priority();// priority 계산
+		}
+	}
+
+
+	thread_tick ();				// 현재 스레드 아이들 tick 증가
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

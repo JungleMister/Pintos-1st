@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -27,6 +28,11 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+/* nice */
+#define NICE_MIN -20
+#define NICE_DEFAULT 0
+#define NICE_MAX 20
 
 /* A kernel thread or user process.
  *
@@ -91,6 +97,15 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
+	int original_priority;
+	int64_t wakeup_time;				// 일어날 시간 추가
+	struct list donations;				// 도네이션 리스트
+	struct list_elem donation_elem;
+	struct lock *wait_on_lock;				// 대기중인 락
+	int nice;
+	int recent_cpu;
+
+
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
@@ -143,4 +158,80 @@ int thread_get_load_avg (void);
 
 void do_iret (struct intr_frame *tf);
 
+bool thread_compare_priority (struct list_elem *a, struct list_elem *b, void *aux UNUSED);
+bool thread_compare_donate_priority (struct list_elem *a, struct list_elem *b, void *aux UNUSED);
+void donate();
+void recalc_priority();
+void remove_lock(struct lock *lock);
+
+
+// 매크로 함수 정의
+/*
+소수점 앞에 17비트, 소수점 뒤에 14비트, 부호 비트가 1개가 있기 때문에 이를 17.14 고정 소수점 숫자 표현이라고 함.
+17.14 형식의 숫자는 최대 (2^31 - 1)/(2^14) ≈ 131,071.999의 값을 나타냄
+*/
+#define FIXED_POINT_SHIFT 14
+#define F (1 << FIXED_POINT_SHIFT)
+
+/* Convert n to fixed point */
+#define INT_TO_FIXED(n) ((n) * (F))
+
+/* Convert x to integer (rounding toward zero) */
+#define FIXED_TO_INT(x) ((x) / (F))
+
+/* Convert x to integer (rounding to nearest) */
+#define FIXED_TO_INT_ROUND(x) ((x) >= 0 ? ((x) + (F) / 2) / (F) : ((x) - (F) / 2) / (F))
+
+/* Add x and y */
+#define FIXED_ADD(x, y) ((x) + (y))
+
+/* Subtract y from x */
+#define FIXED_SUB(x, y) ((x) - (y))
+
+/* Add x and n */
+#define FIXED_ADD_INT(x, n) ((x) + (n) * (F))
+
+/* Subtract n from x */
+#define FIXED_SUB_INT(x, n) ((x) - (n) * (F))
+
+/* Multiply x by y */
+#define FIXED_MUL(x, y) (((int64_t)(x)) * (y) / (F))
+
+/* Multiply x by n */
+#define FIXED_MUL_INT(x, n) ((x) * (n))
+
+/* Divide x by y */
+#define FIXED_DIV(x, y) (((int64_t)(x)) * (F) / (y))
+
+/* Divide x by n */
+#define FIXED_DIV_INT(x, n) ((x) / (n))
+
+
 #endif /* threads/thread.h */
+
+/*
+1. 고정 소수점으로 변환
+정수 3을 고정 소수점으로 변환하기: 3 * 16384 = 49152
+실수 2.5을 고정 소수점으로 변환하기: 2.5 * 16384 = 40960
+
+2. 고정 소수점 덧셈
+1.5와 2.25를 더하기:
+1.5를 고정 소수점으로 변환: 1.5 * 16384 = 24576
+2.25를 고정 소수점으로 변환: 2.25 * 16384 = 36864
+덧셈: 24576 + 36864 = 61440
+고정 소수점 결과를 실수로 변환: 61440 / 16384 = 3.75
+
+3. 고정 소수점 곱셈
+1.5와 2.0을 곱하기:
+1.5를 고정 소수점으로 변환: 24576
+2.0을 고정 소수점으로 변환: 2.0 * 16384 = 32768
+곱셈: ((int64_t) 24576) * 32768 / 16384 = 49152
+고정 소수점 결과를 실수로 변환: 49152 / 16384 = 3.0
+
+4. 고정 소수점 나눗셈
+3.0을 2.0으로 나누기:
+3.0을 고정 소수점으로 변환: 3.0 * 16384 = 49152
+2.0을 고정 소수점으로 변환: 32768
+나눗셈: ((int64_t) 49152) * 16384 / 32768 = 24576
+고정 소수점 결과를 실수로 변환: 24576 / 16384 = 1.5
+*/
