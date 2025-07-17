@@ -377,10 +377,13 @@ thread_set_priority (int new_priority) {
 	struct thread *cur = thread_current ();
 	
 	cur->priority = new_priority;
-	int fisrt_priority = list_entry(list_front (&ready_list), struct thread, elem)->priority; // 준비중인 스레드중 가장 높은 우선순위 가져옴
+	// 준비 큐가 비어있지 않다면
+	if (!list_empty(&ready_list)){
+		int fisrt_priority = list_entry(list_front (&ready_list), struct thread, elem)->priority; // 준비중인 스레드중 가장 높은 우선순위 가져옴
 
-	if (fisrt_priority > new_priority){
-		thread_yield();
+		if (fisrt_priority > new_priority){
+			thread_yield();
+		}
 	}
 }
 
