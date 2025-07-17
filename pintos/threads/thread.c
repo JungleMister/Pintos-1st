@@ -370,13 +370,84 @@ thread_compare_priority (struct list_elem *a, struct list_elem *b, void *aux UNU
 	return thread_a->priority > thread_b->priority;
 }
 
+bool
+thread_compare_donate_priority (struct list_elem *a, struct list_elem *b, void *aux UNUSED)
+{
+	struct thread *thread_a = list_entry(a, struct thread, donation_elem);
+	struct thread *thread_b = list_entry(b, struct thread, donation_elem);
+	return thread_a->priority > thread_b->priority;
+}
+
+/*
+동작과정 정리
+Pintos 기본적으로 RR방식이며 이걸 priority기반으로 동작함
+현재 쓰레드가 락을 생성, 작업 중 타임을 모두 소진하면 다시 준비 큐로 되돌아감
+그 뒤에 새로운 쓰레드가 실행상태로 진입하게 되며 락 획득을 요청하게 됨
+만약 이때 처리하고 싶은 영역에 대해 락을 다른 쓰레드가 가지고 있다면
+자신보다 우선순위가 낮은 상태 따라서 낮은 우선순위와 락을 가지고 있는 쓰레드를 먼저 처리하기위해
+우선순위를 기부할 필요가 생김
+
+아래 donate 코드는 현재 생성된 쓰레드가 락을 요청하면서 실행됨
+즉, donation리스트 기준으로 가장 뒤에 삽입된 쓰레드
+현재 쓰레드가 락을 가진 애들을 보면서 앞으로 진행하면 최종적으로 처음 락을 가진 쓰레드를 만나고
+우선순위를 기부하면서 종료됨
+*/
+
+// 락 획득 요청시 실행
+void donate(){
+	struct thread *cur = thread_current();
+	struct thread *holder = cur->wait_on_lock->holder;
+
+	// holder들을 보면서 우선순위 기부
+	while (holder != NULL && holder->priority < cur->priority) {
+        holder->priority = cur->priority;
+        if (holder->wait_on_lock == NULL) break;
+        holder = holder->wait_on_lock->holder;
+    }
+}
+
+void recalc_priority(){
+	struct thread *cur = thread_current();
+
+	cur->priority = cur->original_priority;
+
+	if (!list_empty (&cur->donations)) {
+    list_sort (&cur->donations, thread_compare_donate_priority, 0);
+
+    struct thread *front = list_entry (list_front (&cur->donations), struct thread, donation_elem);
+    if (front->priority > cur->priority)
+      cur->priority = front->priority;
+  }
+}
+
+
+void
+remove_lock(struct lock *lock){
+	/*
+	현재 쓰레드를 종료하면 우선순위와 증여자 목록 삭제
+	*/
+	struct list_elem *e, *next;
+	struct thread *cur = thread_current();
+	
+    for (e = list_begin(&cur->donations); e != list_end(&cur->donations); e = list_next(e)){
+    struct thread *t = list_entry(e, struct thread, donation_elem);
+    if (t->wait_on_lock == lock){
+        list_remove(&t->donation_elem);
+    }
+}
+}
+
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
 	// 우선순위가 바뀌면 더 높은 우선순위의 스레드가 실행되도록 한다.
 	struct thread *cur = thread_current ();
 	
-	cur->priority = new_priority;
+	cur->original_priority = new_priority;
+
+	// 우선순위 재계산
+	recalc_priority();
+
 	// 준비 큐가 비어있지 않다면
 	if (!list_empty(&ready_list)){
 		int fisrt_priority = list_entry(list_front (&ready_list), struct thread, elem)->priority; // 준비중인 스레드중 가장 높은 우선순위 가져옴
@@ -481,7 +552,10 @@ init_thread (struct thread *t, const char *name, int priority) {
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
+	t->original_priority = priority; 	// 기존 우선순위 저장용(불변)
 	t->magic = THREAD_MAGIC;
+	list_init(&t->donations); 			// 리스트 초기화
+	t->wait_on_lock = NULL; 			// 초기화, 대기중인 락 없음
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

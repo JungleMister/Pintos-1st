@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -91,7 +92,12 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
+	int original_priority;
 	int64_t wakeup_time;				// 일어날 시간 추가
+	struct list donations;				// 도네이션 리스트
+	struct list_elem donation_elem;
+	struct lock *wait_on_lock;				// 대기중인 락
+
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
@@ -143,5 +149,11 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 void do_iret (struct intr_frame *tf);
+
+bool thread_compare_priority (struct list_elem *a, struct list_elem *b, void *aux UNUSED);
+bool thread_compare_donate_priority (struct list_elem *a, struct list_elem *b, void *aux UNUSED);
+void donate();
+void recalc_priority();
+void remove_lock(struct lock *lock);
 
 #endif /* threads/thread.h */
