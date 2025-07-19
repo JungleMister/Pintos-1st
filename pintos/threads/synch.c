@@ -122,7 +122,14 @@ sema_up (struct semaphore *sema) {
 					struct thread, elem)); // 락 대기중인 리스트에 가장 앞을 제거하고 block 해제
 	}
 	sema->value++;
-	thread_yield(); // 선점위해 양보, 아오 일드 쌤
+	// thread_yield(); // 선점위해 양보, 아오 일드 쌤
+	/*
+	인터럽트가 발생하면 임시적으로 상태 저장됨
+	이 상태에서 컨텍스트 스위칭이 일어나면
+	한 번더 상태를 저장하면서 복귀할 주소공간이 2개가 됨
+	복귀 주소가 충돌하면서 문제
+	*/
+	thread_check_preemption();
 	intr_set_level (old_level);
 }
 

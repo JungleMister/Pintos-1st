@@ -22,6 +22,8 @@
 #include "vm/vm.h"
 #endif
 
+#define ALIGN 8
+
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
@@ -49,6 +51,9 @@ process_create_initd (const char *file_name) {
 	if (fn_copy == NULL)
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
+
+	char *save_ptr; // strtok_r 함수 실행을 위한 잠깐의 임시 포인터 변수
+	strtok_r(file_name, " ", &save_ptr); // file_name을 공백문자마다" "을 "\0" 삽입
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
@@ -162,6 +167,10 @@ error:
  * Returns -1 on fail. */
 int
 process_exec (void *f_name) {
+	/*
+	현재 f_name은 grep foo bar 스플릿이 되지 않은 상태
+	이걸 parsing을 통해 split해주고 메모리에 적재 필요
+	*/
 	char *file_name = f_name;
 	bool success;
 
@@ -204,6 +213,10 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	// while(1);
+	for (int i = 0; i < 1000000000; i++){
+
+	}
 	return -1;
 }
 
@@ -316,6 +329,50 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		uint32_t read_bytes, uint32_t zero_bytes,
 		bool writable);
 
+void parsing_file_name(char *file_name, int *argc, char *argv[]){
+	char *token, *save_ptr;
+
+	for (token = strtok_r(file_name, " ", &save_ptr); token != NULL;  token = strtok_r(NULL, " ", &save_ptr)){
+		argv[(*argc)++] = token;
+		// *argc += 1;
+	}
+}
+
+void argument_parsing(int argc, char *argv[], struct intr_frame *if_){
+	void *temp_address[128];
+
+	for (int i = argc - 1; i >= 0; i--){
+		int length = strlen(argv[i]) + 1; 	// 문자열 + \0
+		if_->rsp -= length; 					// 길이 만큼 스택 포인터를 이동
+		memcpy(if_->rsp, argv[i], length); 		// 문자열 복사
+		temp_address[i] = if_->rsp; 			// 임시로 주소를 저장
+	}
+
+	// 8바이트 패딩 삽입
+	int padding = (int)if_->rsp % ALIGN;
+	if (padding != 0) {
+		if_->rsp -= padding;					// 삽입전 포인터 내려줌
+    	memset(if_->rsp, 0, padding);  			// 패딩 삽입
+	}
+
+	// NULL 포인터 추가
+    if_->rsp -= ALIGN;
+    memset(if_->rsp, 0, ALIGN);
+
+	// 주소 삽입
+	for (int i = argc - 1; i >= 0; i--){
+		if_->rsp -= ALIGN;
+		memcpy(if_->rsp, &temp_address[i], ALIGN);
+	}
+
+	if_->rsp -= ALIGN;
+	memset(if_->rsp, 0, ALIGN);
+
+	// 레지스터 설정
+    if_->R.rdi = argc;           		// argc
+    if_->R.rsi = if_->rsp + ALIGN;     // argv 시작 주소
+}
+
 /* Loads an ELF executable from FILE_NAME into the current thread.
  * Stores the executable's entry point into *RIP
  * and its initial stack pointer into *RSP.
@@ -334,6 +391,11 @@ load (const char *file_name, struct intr_frame *if_) {
 	if (t->pml4 == NULL)
 		goto done;
 	process_activate (thread_current ());
+
+	int argc = 0;
+	char *argv[128];
+
+	parsing_file_name(file_name, &argc, argv);
 
 	/* Open executable file. */
 	file = filesys_open (file_name);
@@ -416,6 +478,16 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
+
+	// 인자를 스택에 저장하는 코드 작성
+	argument_parsing(argc, argv, if_);
+
+
+	// argument parsing 구현 후
+	printf("=== Stack Contents ===\n");
+	printf("argc: %d\n", argc);
+	printf("Stack pointer: %p\n", if_->rsp);
+	hex_dump(if_->rsp, if_->rsp, USER_STACK - (uint64_t)if_->rsp, true);
 
 	success = true;
 
