@@ -101,11 +101,22 @@ struct thread {
 	int64_t wakeup_time;				// 일어날 시간 추가
 	struct list donations;				// 도네이션 리스트
 	struct list_elem donation_elem;
-	struct lock *wait_on_lock;				// 대기중인 락
+	struct lock *wait_on_lock;			// 대기중인 락
 	int nice;
 	int recent_cpu;
 
+	struct thread *parent;				// 부모 쓰레드 포인터
+	struct list child_list;				// 자식 쓰레드 리스트
+	struct list_elem child_elem;		// 자식 쓰레드 관리를 위한 list_elem
 
+    /* 프로세스 종료 동기화를 위한 세마포어 */
+    struct semaphore wait_sema;      	// 부모가 자식 종료를 기다릴 때 사용 (초기값: 0)
+    struct semaphore exit_sema;      	// 자식의 완전한 종료를 보장하기 위해 사용 (초기값: 0)
+
+	int exit_status;					// 프로세스 종료 상태 (비정상 -1)
+	bool waited;						// 이미 wait()이 호출되었는지 확인
+
+	struct list_elem all_elem;
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
@@ -164,6 +175,7 @@ void donate();
 void recalc_priority();
 void remove_lock(struct lock *lock);
 void thread_check_preemption();
+struct thread * get_thread_tid(tid_t tid);
 
 
 // 매크로 함수 정의
