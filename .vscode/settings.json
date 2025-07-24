@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "thread.h": "c",
+        "interrupt.h": "c",
+        "gdt.h": "c",
+        "file.h": "c",
+        "filesys.h": "c",
+        "string_view": "c",
+        "*.inc": "c",
+        "atomic": "c",
+        "lib.h": "c"
+    }
+}

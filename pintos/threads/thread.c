@@ -118,6 +118,7 @@ thread_init (void) {
 	list_init (&sleep_list); // 리스트 초기화
 	list_init (&destruction_req);
 
+
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
 	initial_thread->nice = 0;
@@ -311,6 +312,21 @@ thread_exit (void) {
 	intr_disable ();
 	do_schedule (THREAD_DYING);
 	NOT_REACHED ();
+}
+
+void thread_yield_r()
+{
+	if (!list_empty(&ready_list) && (thread_current()->priority < list_entry(list_front(&ready_list), struct thread, elem)->priority)) 
+	{
+		if (intr_context()) 
+		{
+			intr_yield_on_return();
+		} 
+		else
+		{
+			thread_yield();
+		}
+	}
 }
 
 /* Yields the CPU.  The current thread is not put to sleep and
@@ -649,6 +665,15 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->magic = THREAD_MAGIC;
 	list_init(&t->donations); 			// 리스트 초기화
 	t->wait_on_lock = NULL; 			// 초기화, 대기중인 락 없음
+	list_init(&t->child_list);       // 자식 리스트 초기화
+	sema_init(&t->wait_sema, 0);     // wait()용 세마포어
+	sema_init(&t->free_sema, 0);     // 부모가 메모리 해제 전 대기
+	t->exit_status = -1;            // 종료 상태 기본값
+	t->parent = NULL;               // 부모는 fork에서 설정
+	list_init(&t->fd_list);
+	t->next_fd = 2;
+	sema_init(&t->fork_sema, 0);
+	t->fork_success = false;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

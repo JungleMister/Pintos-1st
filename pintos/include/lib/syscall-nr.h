@@ -6,9 +6,9 @@ enum {
 	/* Projects 2 and later. */
 	SYS_HALT,                   /* Halt the operating system. */
 	SYS_EXIT,                   /* Terminate this process. */
-	SYS_FORK,                   /* Clone current process. */
-	SYS_EXEC,                   /* Switch current process. */
-	SYS_WAIT,                   /* Wait for a child process to die. */
+	SYS_FORK,                   /* Clone current process. 이놈 해야함 */
+	SYS_EXEC,                   /* Switch current process. 이놈 해야함 */
+	SYS_WAIT,                   /* Wait for a child process to die. 이놈 해야함 */
 	SYS_CREATE,                 /* Create a file. */
 	SYS_REMOVE,                 /* Delete a file. */
 	SYS_OPEN,                   /* Open a file. */

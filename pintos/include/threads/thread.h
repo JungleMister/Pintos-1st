@@ -34,6 +34,13 @@ typedef int tid_t;
 #define NICE_DEFAULT 0
 #define NICE_MAX 20
 
+struct file_descriptor
+{
+	int fd;
+	struct file *file;
+	struct list_elem elem;
+};
+
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -105,6 +112,27 @@ struct thread {
 	int nice;
 	int recent_cpu;
 
+	/* argument passing */
+    char **argv;
+    int argc;
+
+    /* process 관리용 */
+	struct thread *parent;
+    struct semaphore wait_sema;     // 부모가 자식 종료 기다림
+    struct semaphore free_sema;     // 자식이 부모 해제 기다림
+    int exit_status;                // 자식이 종료 시 남기는 상태
+    struct list child_list;         // 자식 리스트 (부모 전용)
+    struct list_elem child_elem;    // 부모 리스트에 연결될 자식 항목
+	struct semaphore fork_sema;		// 부모가 wait하는 세마포어
+	bool fork_success;  			// 자식 초기화 성공 여부
+	struct list fd_list;
+    int next_fd;
+
+	/* rox 방지용 */
+	struct file *running_file;
+	/* 자식이 예상치 못하게 죽으면 켜짐*/
+	bool killed_by_exception;
+
 
 
 	/* Shared between thread.c and synch.c. */
@@ -160,9 +188,10 @@ void do_iret (struct intr_frame *tf);
 
 bool thread_compare_priority (struct list_elem *a, struct list_elem *b, void *aux UNUSED);
 bool thread_compare_donate_priority (struct list_elem *a, struct list_elem *b, void *aux UNUSED);
-void donate();
-void recalc_priority();
+void donate(void);
+void recalc_priority(void);
 void remove_lock(struct lock *lock);
+void thread_sleep (int64_t ticks);
 
 
 // 매크로 함수 정의

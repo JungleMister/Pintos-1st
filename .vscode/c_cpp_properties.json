@@ -1,0 +1,23 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/pintos/include",
+                "${workspaceFolder}/pintos/lib",
+                "${workspaceFolder}/pintos/lib/user",
+                "${workspaceFolder}/pintos/threads",
+                "${workspaceFolder}/pintos/userprog"
+            ],
+            "defines": [
+                "USERPROG"
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}

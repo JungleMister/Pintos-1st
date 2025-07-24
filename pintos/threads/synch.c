@@ -122,7 +122,9 @@ sema_up (struct semaphore *sema) {
 					struct thread, elem)); // 락 대기중인 리스트에 가장 앞을 제거하고 block 해제
 	}
 	sema->value++;
-	thread_yield(); // 선점위해 양보, 아오 일드 쌤
+
+	thread_yield_r();
+	// thread_yield(); // 선점위해 양보, 아오 일드 쌤
 	intr_set_level (old_level);
 }
 
