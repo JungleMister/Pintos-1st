@@ -8,6 +8,7 @@
         "string_view": "c",
         "*.inc": "c",
         "atomic": "c",
-        "lib.h": "c"
+        "lib.h": "c",
+        "input.h": "c"
     }
 }

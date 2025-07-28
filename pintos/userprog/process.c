@@ -130,33 +130,57 @@ static struct thread *get_child_by_tid(tid_t tid)
 
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
+// tid_t process_fork(const char *name, struct intr_frame *if_)
+// {
+// 	struct fork_args *args = palloc_get_page(PAL_ZERO);
+// 	if (args == NULL)
+// 		return TID_ERROR;
+
+// 	// 부모 레지스터 상태 복사
+// 	memcpy(&args->if_, if_, sizeof(struct intr_frame));
+// 	args->parent = thread_current();
+
+// 	// 자식 생성
+// 	tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, args);
+// 	if (tid == TID_ERROR)
+// 	{
+// 		palloc_free_page(args);
+// 		return TID_ERROR;
+// 	}
+// 	sema_down(&thread_current()->fork_sema); // 자식이 초기화 완료할 때까지 대기
+
+// 	// 자식이 초기화 완료할 때까지 대기
+// 	struct thread *child = get_child_by_tid(tid);
+// 	if (child == NULL || !child->fork_success)
+// 	{
+// 		palloc_free_page(args);
+// 		return TID_ERROR;
+// 	}
+// 	return tid;
+// }
+
 tid_t process_fork(const char *name, struct intr_frame *if_)
 {
-	struct fork_args *args = palloc_get_page(PAL_ZERO);
-	if (args == NULL)
-		return TID_ERROR;
+    // 스택에 직접 할당 (메모리 할당 없음)
+    struct fork_args args;
+    
+    // 부모 레지스터 상태 복사
+    memcpy(&args.if_, if_, sizeof(struct intr_frame));
+    args.parent = thread_current();
 
-	// 부모 레지스터 상태 복사
-	memcpy(&args->if_, if_, sizeof(struct intr_frame));
-	args->parent = thread_current();
+    // 자식 생성
+    tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, &args);
+    if (tid == TID_ERROR)
+        return TID_ERROR;
+    
+    sema_down(&thread_current()->fork_sema); // 자식이 초기화 완료할 때까지 대기
 
-	// 자식 생성
-	tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, args);
-	if (tid == TID_ERROR)
-	{
-		palloc_free_page(args);
-		return TID_ERROR;
-	}
-	sema_down(&thread_current()->fork_sema); // 자식이 초기화 완료할 때까지 대기
-
-	// 자식이 초기화 완료할 때까지 대기
-	struct thread *child = get_child_by_tid(tid);
-	if (child == NULL || !child->fork_success)
-	{
-		palloc_free_page(args);
-		return TID_ERROR;
-	}
-	return tid;
+    // 자식이 초기화 완료할 때까지 대기
+    struct thread *child = get_child_by_tid(tid);
+    if (child == NULL || !child->fork_success) {
+        return TID_ERROR;
+    }
+    return tid;
 }
 
 #ifndef VM
@@ -207,76 +231,152 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
  * Hint) parent->tf does not hold the userland context of the process.
  *       That is, you are required to pass second argument of process_fork to
  *       this function. */
-static void
-__do_fork(void *aux)
+// static void
+// __do_fork(void *aux)
+// {
+// 	struct fork_args *args = (struct fork_args *)aux;
+// 	struct intr_frame if_ = args->if_; // 부모의 레지스터 상태 복사
+// 	struct thread *parent = args->parent;
+// 	struct thread *current = thread_current();
+
+// 	bool success = false; // 최종 성공 여부
+
+// 	// 부모 설정
+// 	current->parent = parent;
+
+// 	// 주소 공간 복사
+// 	current->pml4 = pml4_create();
+// 	if (current->pml4 == NULL)
+// 		goto cleanup;
+
+// 	process_activate(current);
+
+// #ifdef VM
+// 	supplemental_page_table_init(&current->spt);
+// 	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
+// 		goto cleanup;
+// #else
+// 	if (!pml4_for_each(parent->pml4, duplicate_pte, parent))
+// 		goto cleanup;
+// #endif
+
+// 	// 파일 디스크립터 복사
+// 	list_init(&current->fd_list);
+// 	current->next_fd = 2;
+
+// 	struct list_elem *e;
+// 	for (e = list_begin(&parent->fd_list); e != list_end(&parent->fd_list); e = list_next(e))
+// 	{
+// 		struct file_descriptor *p_fdesc = list_entry(e, struct file_descriptor, elem);
+// 		struct file_descriptor *c_fdesc = malloc(sizeof(struct file_descriptor));
+// 		if (c_fdesc == NULL)
+// 			goto cleanup;
+
+// 		c_fdesc->fd = p_fdesc->fd;
+// 		c_fdesc->file = file_duplicate(p_fdesc->file);
+// 		list_push_back(&current->fd_list, &c_fdesc->elem);
+// 		current->next_fd = p_fdesc->fd >= current->next_fd ? p_fdesc->fd + 1 : current->next_fd;
+// 	}
+
+// 	// 부모 자식 연결
+// 	list_push_back(&parent->child_list, &current->child_elem);
+
+// 	// 성공 설정 및 세마포어 알림
+// 	current->parent = parent;
+// 	current->fork_success = true;
+// 	sema_up(&parent->fork_sema);
+// 	palloc_free_page(args);
+
+// 	// 자식은 0 반환
+// 	if_.R.rax = 0;
+
+// 	do_iret(&if_); // 유저 모드 진입 (절대 리턴 안 됨)
+
+// 	NOT_REACHED(); // 여기에 도달하면 오류
+
+// cleanup:
+// 	// 실패 처리
+// 	current->fork_success = false;
+// 	current->killed_by_exception = true;
+// 	sema_up(&current->fork_sema);
+// 	palloc_free_page(args);
+// 	thread_exit(); // 실패 시 정리 후 종료
+// }
+
+static void __do_fork(void *aux)
 {
-	struct fork_args *args = (struct fork_args *)aux;
-	struct intr_frame if_ = args->if_; // 부모의 레지스터 상태 복사
-	struct thread *parent = args->parent;
-	struct thread *current = thread_current();
+    struct fork_args *args = (struct fork_args *)aux;
+    // 즉시 복사해서 스택 변수 의존성 제거
+    struct intr_frame if_ = args->if_;
+    struct thread *parent = args->parent;
+    struct thread *current = thread_current();
 
-	bool success = false; // 최종 성공 여부
+    bool success = false;
 
-	// 부모 설정
-	current->parent = parent;
+    // 부모 설정
+    current->parent = parent;
 
-	// 주소 공간 복사
-	current->pml4 = pml4_create();
-	if (current->pml4 == NULL)
-		goto cleanup;
+    // 주소 공간 복사
+    current->pml4 = pml4_create();
+    if (current->pml4 == NULL)
+        goto cleanup;
 
-	process_activate(current);
+    process_activate(current);
 
 #ifdef VM
-	supplemental_page_table_init(&current->spt);
-	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
-		goto cleanup;
+    supplemental_page_table_init(&current->spt);
+    if (!supplemental_page_table_copy(&current->spt, &parent->spt))
+        goto cleanup;
 #else
-	if (!pml4_for_each(parent->pml4, duplicate_pte, parent))
-		goto cleanup;
+    if (!pml4_for_each(parent->pml4, duplicate_pte, parent))
+        goto cleanup;
 #endif
 
-	// 파일 디스크립터 복사
-	list_init(&current->fd_list);
-	current->next_fd = 2;
+    // 파일 디스크립터 복사
+    list_init(&current->fd_list);
+    current->next_fd = 2;
 
-	struct list_elem *e;
-	for (e = list_begin(&parent->fd_list); e != list_end(&parent->fd_list); e = list_next(e))
-	{
-		struct file_descriptor *p_fdesc = list_entry(e, struct file_descriptor, elem);
-		struct file_descriptor *c_fdesc = malloc(sizeof(struct file_descriptor));
-		if (c_fdesc == NULL)
-			goto cleanup;
+    struct list_elem *e;
+    for (e = list_begin(&parent->fd_list); e != list_end(&parent->fd_list); e = list_next(e))
+    {
+        struct file_descriptor *p_fdesc = list_entry(e, struct file_descriptor, elem);
+        struct file_descriptor *c_fdesc = malloc(sizeof(struct file_descriptor));
+        if (c_fdesc == NULL)
+            goto cleanup;
 
-		c_fdesc->fd = p_fdesc->fd;
-		c_fdesc->file = file_duplicate(p_fdesc->file);
-		list_push_back(&current->fd_list, &c_fdesc->elem);
-		current->next_fd = p_fdesc->fd >= current->next_fd ? p_fdesc->fd + 1 : current->next_fd;
-	}
+        c_fdesc->fd = p_fdesc->fd;
+        c_fdesc->file = file_duplicate(p_fdesc->file);
+        if (c_fdesc->file == NULL) {
+            free(c_fdesc);
+            goto cleanup;
+        }
+        
+        list_push_back(&current->fd_list, &c_fdesc->elem);
+        current->next_fd = p_fdesc->fd >= current->next_fd ? p_fdesc->fd + 1 : current->next_fd;
+    }
 
-	// 부모 자식 연결
-	list_push_back(&parent->child_list, &current->child_elem);
+    // 부모 자식 연결
+    list_push_back(&parent->child_list, &current->child_elem);
 
-	// 성공 설정 및 세마포어 알림
-	current->parent = parent;
-	current->fork_success = true;
-	sema_up(&parent->fork_sema);
-	palloc_free_page(args);
+    // 성공 설정 및 세마포어 알림
+    current->fork_success = true;
+    sema_up(&parent->fork_sema);
+    // args는 부모의 스택 변수이므로 해제할 필요 없음
 
-	// 자식은 0 반환
-	if_.R.rax = 0;
+    // 자식은 0 반환
+    if_.R.rax = 0;
 
-	do_iret(&if_); // 유저 모드 진입 (절대 리턴 안 됨)
+    do_iret(&if_); // 유저 모드 진입
 
-	NOT_REACHED(); // 여기에 도달하면 오류
+    NOT_REACHED();
 
 cleanup:
-	// 실패 처리
-	current->fork_success = false;
-	current->killed_by_exception = true;
-	sema_up(&current->fork_sema);
-	palloc_free_page(args);
-	thread_exit(); // 실패 시 정리 후 종료
+    // 실패 처리
+    current->fork_success = false;
+    current->killed_by_exception = true;
+    sema_up(&parent->fork_sema);
+    // args는 부모의 스택 변수이므로 해제할 필요 없음
+    thread_exit();
 }
 
 /* Switch the current execution context to the f_name.

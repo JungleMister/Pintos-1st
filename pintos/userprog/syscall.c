@@ -44,8 +44,8 @@ static void check_address(const void *addr)
 	if (addr == NULL || !is_user_vaddr(addr) || pml4_get_page(thread_current()->pml4, addr) == NULL)
 	{
 		thread_current()->exit_status = -1;
-        printf("%s: exit(-1)\n", thread_name());
-        thread_exit();
+		printf("%s: exit(-1)\n", thread_name());
+		thread_exit();
 	}
 }
 
@@ -164,13 +164,6 @@ void syscall_handler(struct intr_frame *f UNUSED)
 	case SYS_CLOSE:
 	{
 		int fd = f->R.rdi;
-
-		// stdin/stdout 닫기 방지
-		if (fd <= 1)
-		{
-			f->R.rax = -1;
-			break;
-		}
 
 		struct file_descriptor *fdesc = find_fd(fd);
 		if (fdesc == NULL)
@@ -315,7 +308,7 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		const char *name = (const char *)f->R.rdi;
 		check_address(name); // 포인터 유효성 검사
 
-		f->R.rax = process_fork(name, f); // intr_frame 전달!
+		f->R.rax = process_fork(name, f); // intr_frame 전달
 		break;
 	}
 
@@ -334,14 +327,75 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		break;
 	}
 
-		/*
-		
-		case SYS_EXEC:
-		case SYS_WAIT:
-		*/
+	case SYS_DUP2:
+	{
+		int oldfd = f->R.rdi;
+		int newfd = f->R.rsi;
 
+		/* 1) 기본 유효성 검사 */
+		if (oldfd < 0 || newfd < 0)
+		{
+			f->R.rax = -1;
+			break;
+		}
+
+		/* 2) oldfd가 유효한 파일 디스크립터인지 확인 */
+		struct file_descriptor *old_fdesc = find_fd(oldfd);
+		if (old_fdesc == NULL || old_fdesc->file == NULL)
+		{
+			f->R.rax = -1;
+			break;
+		}
+
+		/* 3) oldfd == newfd인 경우 - 아무것도 하지 않고 newfd 반환 */
+		if (oldfd == newfd)
+		{
+			f->R.rax = newfd;
+			break;
+		}
+
+		/* 4) newfd가 이미 열려있다면 먼저 닫기 */
+		struct file_descriptor *existing_fdesc = find_fd(newfd);
+		if (existing_fdesc != NULL)
+		{
+			list_remove(&existing_fdesc->elem);
+			if (existing_fdesc->file != NULL)
+			{
+				file_close(existing_fdesc->file);
+			}
+			free(existing_fdesc);
+		}
+
+		/* 5) 파일 복제 - file_duplicate 사용 (참조 카운트 관리) */
+		struct file *dup_file = file_duplicate(old_fdesc->file);
+		if (dup_file == NULL)
+		{
+			f->R.rax = -1;
+			break;
+		}
+
+		/* 6) 새로운 파일 디스크립터 생성 */
+		struct file_descriptor *new_fdesc = malloc(sizeof(struct file_descriptor));
+		if (new_fdesc == NULL)
+		{
+			file_close(dup_file);
+			f->R.rax = -1;
+			break;
+		}
+
+		new_fdesc->file = dup_file;
+		new_fdesc->fd = newfd;
+		list_push_back(&thread_current()->fd_list, &new_fdesc->elem);
+
+		/* 6) next_fd 업데이트 */
+		if (newfd >= thread_current()->next_fd)
+		{
+			thread_current()->next_fd = newfd + 1;
+		}
+
+		f->R.rax = newfd;
+		break;
+	}
 	default:
-	
-		  
 	}
 }
