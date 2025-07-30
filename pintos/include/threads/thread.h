@@ -10,6 +10,10 @@
 #include "vm/vm.h"
 #endif
 
+#define MAX_FD 1 << 9
+#define STDIN_  1
+#define STDOUT_ 2
+
 
 /* States in a thread's life cycle. */
 enum thread_status {
@@ -112,6 +116,17 @@ struct thread {
     /* 프로세스 종료 동기화를 위한 세마포어 */
     struct semaphore wait_sema;      	// 부모가 자식 종료를 기다릴 때 사용 (초기값: 0)
     struct semaphore exit_sema;      	// 자식의 완전한 종료를 보장하기 위해 사용 (초기값: 0)
+	struct semaphore fork_sema;
+
+	struct intr_frame parent_if;
+
+	struct file **fdt;
+	int fd_idx;
+
+	struct file *running;
+	
+	int stdin_count;
+	int stdout_count;
 
 	int exit_status;					// 프로세스 종료 상태 (비정상 -1)
 	bool waited;						// 이미 wait()이 호출되었는지 확인

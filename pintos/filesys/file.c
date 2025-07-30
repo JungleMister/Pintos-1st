@@ -8,6 +8,7 @@ struct file {
 	struct inode *inode;        /* File's inode. */
 	off_t pos;                  /* Current position. */
 	bool deny_write;            /* Has file_deny_write() been called? */
+	int ref_cnt;
 };
 
 /* Opens a file for the given INODE, of which it takes ownership,
@@ -20,6 +21,7 @@ file_open (struct inode *inode) {
 		file->inode = inode;
 		file->pos = 0;
 		file->deny_write = false;
+		file->ref_cnt = 1;
 		return file;
 	} else {
 		inode_close (inode);
@@ -44,6 +46,7 @@ file_duplicate (struct file *file) {
 		nfile->pos = file->pos;
 		if (file->deny_write)
 			file_deny_write (nfile);
+		nfile->ref_cnt = file->ref_cnt; // 아오씨 이거 추가 안해서 상태가 둘이 달라진거임 시부레
 	}
 	return nfile;
 }
@@ -158,4 +161,16 @@ off_t
 file_tell (struct file *file) {
 	ASSERT (file != NULL);
 	return file->pos;
+}
+
+void inc_ref_cnt(struct file *file){
+	file->ref_cnt++;
+}
+
+void dec_ref_cnt(struct file *file){
+	file->ref_cnt--;
+}
+
+int get_ref_cnt(struct file *file){
+	return file->ref_cnt;
 }
