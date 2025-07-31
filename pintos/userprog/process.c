@@ -4,7 +4,7 @@
 #include <round.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <string.h> /
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
@@ -22,10 +22,14 @@
 #include "vm/vm.h"
 #endif
 
+#define ALIGN 8
+
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
+void process_duplicate2(struct thread *child, struct thread *parent);
+void clear_file_descriptor(struct thread *cur);
 
 /* General process initializer for initd and other process. */
 static void
@@ -49,6 +53,9 @@ process_create_initd (const char *file_name) {
 	if (fn_copy == NULL)
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
+
+	char *save_ptr; // strtok_r 함수 실행을 위한 잠깐의 임시 포인터 변수
+	strtok_r(file_name, " ", &save_ptr); // file_name을 공백문자마다" "을 "\0" 삽입
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
@@ -76,8 +83,25 @@ initd (void *f_name) {
 tid_t
 process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	/* Clone current thread to new thread.*/
-	return thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
+	struct thread *cur = thread_current();
+
+	memcpy(&cur->parent_if, if_, sizeof(struct intr_frame));
+
+	// 현재 부모와 넘겨 넘겨야 할 if_ 줘야함
+	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, cur);
+	if (tid == TID_ERROR)
+		return TID_ERROR;
+	
+	struct thread *child = get_child_process(tid);
+	if (child == NULL)
+		return TID_ERROR;
+	
+	sema_down(&child->fork_sema); // 자식이 준비될 때까지 대기
+
+	if (child->exit_status == -1)
+		return TID_ERROR;
+
+	return tid;
 }
 
 #ifndef VM
@@ -92,21 +116,32 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	bool writable;
 
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
+	if (is_kernel_vaddr(va))
+		return true;
 
 	/* 2. Resolve VA from the parent's page map level 4. */
 	parent_page = pml4_get_page (parent->pml4, va);
+	if (parent_page == NULL)
+		return false;
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
+	newpage = palloc_get_page(PAL_USER | PAL_ZERO);
+	if (newpage == NULL)
+		return false;
 
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
+	memcpy(newpage, parent_page, PGSIZE);
+	writable = is_writable(pte);
 
 	/* 5. Add new page to child's page table at address VA with WRITABLE
 	 *    permission. */
 	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
 		/* 6. TODO: if fail to insert page, do error handling. */
+		palloc_free_page(newpage);
+		return false;
 	}
 	return true;
 }
@@ -122,7 +157,7 @@ __do_fork (void *aux) {
 	struct thread *parent = (struct thread *) aux;
 	struct thread *current = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if;
+	struct intr_frame *parent_if = &parent->parent_if;
 	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
@@ -148,20 +183,39 @@ __do_fork (void *aux) {
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
+	// 가득차면 빠르게 오류로 쳐냄
+	if (parent->fd_idx == MAX_FD)
+		goto error;
+	
+	/* 
+	원본 파일 A와 그걸 참조해서 열려있는 B형태를 그대로 유지해줘야 한다.
+	원본 여부를 판단하고 그걸 복사한 A'가 있다면 B'도 A'를 참조하도록 해줘야 한다.
+	즉, 원본만 복사 참조형태로 open된 파일은 참조형태를 유지해주도록 기능을 작성해야 한다.
+	(offset 공유를 위해서)
+	*/
+	process_duplicate2(current, parent);
 
-	process_init ();
+	sema_up(&current->fork_sema);
+
+	// process_init ();
 
 	/* Finally, switch to the newly created process. */
 	if (succ)
+		if_.R.rax = 0; 				// 반환값 (자식프로세스가 0을 반환해야 함.)
 		do_iret (&if_);
 error:
-	thread_exit ();
+	sema_up(&current->fork_sema); 	// 오류시에 부모를 깨워주도록 한다.
+	exit(TID_ERROR);
 }
 
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
 int
 process_exec (void *f_name) {
+	/*
+	현재 f_name은 grep foo bar 스플릿이 되지 않은 상태
+	이걸 parsing을 통해 split해주고 메모리에 적재 필요
+	*/
 	char *file_name = f_name;
 	bool success;
 
@@ -180,15 +234,30 @@ process_exec (void *f_name) {
 	success = load (file_name, &_if);
 
 	/* If load failed, quit. */
-	palloc_free_page (file_name);
-	if (!success)
+	if (!success){
+		palloc_free_page (file_name);	//실패시 page 반환
 		return -1;
+	}
 
 	/* Start switched process. */
 	do_iret (&_if);
 	NOT_REACHED ();
 }
 
+static struct thread *
+get_child_process(tid_t child_tid){
+	struct thread *cur = thread_current();
+	struct list_elem *e;
+
+	for (e = list_begin(&cur->child_list); e != list_end(&cur->child_list); e = list_next(e)){
+		struct thread *child = list_entry(e, struct thread, child_elem);
+
+		if (child->tid == child_tid){
+			return child;
+		}
+	}
+	return NULL;
+}
 
 /* Waits for thread TID to die and returns its exit status.  If
  * it was terminated by the kernel (i.e. killed due to an
@@ -200,23 +269,53 @@ process_exec (void *f_name) {
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) {
+process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	return -1;
+
+	struct thread *child = get_child_process(child_tid);
+
+	if (child == NULL){
+		return TID_ERROR;
+	}
+
+	// child->waited = true;
+
+	sema_down(&child->wait_sema);
+	int exit_status = child->exit_status;
+	list_remove(&child->child_elem);
+	sema_up(&child->exit_sema);
+
+	return exit_status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void
 process_exit (void) {
-	struct thread *curr = thread_current ();
+	struct thread *cur = thread_current ();
 	/* TODO: Your code goes here.
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
+	// 파일 디스크립터 정리
+	clear_file_descriptor(cur);
+    
+    // FDT 메모리 해제
+    palloc_free_multiple(cur->fdt, 3);
+
+	file_close(cur->running);
+    
+    /* 부모 프로세스와의 동기화 */
+    if (cur->parent != NULL) {
+        sema_up(&cur->wait_sema);
+        sema_down(&cur->exit_sema);
+    }
+
 	process_cleanup ();
+
+    // thread_exit(); // 스레드 종료
 }
 
 /* Free the current process's resources. */
@@ -316,6 +415,49 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		uint32_t read_bytes, uint32_t zero_bytes,
 		bool writable);
 
+void parsing_file_name(char *file_name, int *argc, char *argv[]){
+	char *token, *save_ptr;
+
+	for (token = strtok_r(file_name, " ", &save_ptr); token != NULL;  token = strtok_r(NULL, " ", &save_ptr)){
+		argv[(*argc)++] = token;
+	}
+}
+
+void argument_parsing(int argc, char *argv[], struct intr_frame *if_){
+	void *temp_address[128];
+
+	for (int i = argc - 1; i >= 0; i--){
+		int length = strlen(argv[i]) + 1; 	// 문자열 + \0
+		if_->rsp -= length; 					// 길이 만큼 스택 포인터를 이동
+		memcpy(if_->rsp, argv[i], length); 		// 문자열 복사
+		temp_address[i] = if_->rsp; 			// 임시로 주소를 저장
+	}
+
+	// 8바이트 패딩 삽입
+	int padding = (int)if_->rsp % ALIGN;
+	if (padding != 0) {
+		if_->rsp -= padding;					// 삽입전 포인터 내려줌
+    	memset(if_->rsp, 0, padding);  			// 패딩 삽입
+	}
+
+	// NULL 포인터 추가
+    if_->rsp -= ALIGN;
+    memset(if_->rsp, 0, ALIGN);
+
+	// 주소 삽입
+	for (int i = argc - 1; i >= 0; i--){
+		if_->rsp -= ALIGN;
+		memcpy(if_->rsp, &temp_address[i], ALIGN);
+	}
+
+	if_->rsp -= ALIGN;
+	memset(if_->rsp, 0, ALIGN);
+
+	// 레지스터 설정
+    if_->R.rdi = argc;           		// argc
+    if_->R.rsi = if_->rsp + ALIGN;     // argv 시작 주소
+}
+
 /* Loads an ELF executable from FILE_NAME into the current thread.
  * Stores the executable's entry point into *RIP
  * and its initial stack pointer into *RSP.
@@ -335,12 +477,21 @@ load (const char *file_name, struct intr_frame *if_) {
 		goto done;
 	process_activate (thread_current ());
 
+	int argc = 0;
+	char *argv[128];
+
+	// 파싱
+	parsing_file_name(file_name, &argc, argv);
+
 	/* Open executable file. */
 	file = filesys_open (file_name);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
 	}
+
+	t->running = file;
+	file_deny_write(file);
 
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -417,11 +568,14 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 
+	// 인자를 스택에 저장하는 코드 작성
+	argument_parsing(argc, argv, if_);
+
 	success = true;
 
 done:
 	/* We arrive here whether the load is successful or not. */
-	file_close (file);
+	// file_close (file);
 	return success;
 }
 
@@ -637,3 +791,55 @@ setup_stack (struct intr_frame *if_) {
 	return success;
 }
 #endif /* VM */
+
+void process_duplicate2(struct thread *child, struct thread *parent){
+	const int DICTLEN = 10;
+	struct dict_elem dup_file_dict[10];
+	int dup_idx = 0;
+	
+	for(int i = 0; i < MAX_FD; i++){
+		struct file *file = parent->fdt[i];
+		if (file != NULL){
+			bool found = false;
+			// 우선 딕셔너리에서 참조해서 열 파일이 있는지 찾아본다.
+			for (int j = 0; j < dup_idx; j++){
+				if (dup_file_dict[j].key == file){
+					child->fdt[i] = dup_file_dict[j].value;
+					found = true;
+					break;
+				}
+			}
+			// 딕셔너리 내에 없다면 원본, 원본은 딕셔너리에 저장
+			if (!found){
+				struct file *new_file;
+				// file 1, 2는 표준 입출력
+				if (file > 2){
+					new_file = file_duplicate(file);
+				}
+				else{
+					// 표준 입출력은 그냥 복사
+					new_file = file;
+				}
+
+				child->fdt[i] = new_file;
+
+				if(dup_idx < DICTLEN){
+					dup_file_dict[dup_idx].key = file;
+					dup_file_dict[dup_idx].value = new_file;
+					dup_idx ++;
+				}
+			}
+		}
+	}
+
+	child->fd_idx = parent->fd_idx;
+}
+
+void clear_file_descriptor(struct thread *cur){
+	// close를 호출하여 fdt의 모든 파일을 닫도록 한다.
+	for (int i = 0; i < MAX_FD; i++) {
+        if (cur->fdt[i] != NULL) {
+            close(i);
+        }
+    }
+}
