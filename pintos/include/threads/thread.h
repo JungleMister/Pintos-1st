@@ -163,6 +163,7 @@ bool thread_compare_donate_priority (struct list_elem *a, struct list_elem *b, v
 void donate();
 void recalc_priority();
 void remove_lock(struct lock *lock);
+void thread_check_preemption();
 
 
 // 매크로 함수 정의
