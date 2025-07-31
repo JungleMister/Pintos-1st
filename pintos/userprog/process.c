@@ -4,7 +4,7 @@
 #include <round.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <string.h> /
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
@@ -57,8 +57,21 @@ process_create_initd (const char *file_name) {
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
-	if (tid == TID_ERROR)
+	if (tid == TID_ERROR){
 		palloc_free_page (fn_copy);
+		return TID_ERROR;
+	}
+
+	enum intr_level old_level = intr_disable();
+
+	struct thread *parent = thread_current();
+	struct thread *child = get_thread_tid(tid);
+
+	if (child){
+		child->parent = parent;
+		list_push_back(&parent->child_list, &child->child_elem);
+	}
+	intr_set_level(old_level);
 	return tid;
 }
 
@@ -198,6 +211,20 @@ process_exec (void *f_name) {
 	NOT_REACHED ();
 }
 
+static struct thread *
+get_child_process(tid_t child_tid){
+	struct thread *cur = thread_current();
+	struct list_elem *e;
+
+	for (e = list_begin(&cur->child_list); e != list_end(&cur->child_list); e = list_next(e)){
+		struct thread *child = list_entry(e, struct thread, child_elem);
+
+		if (child->tid == child_tid && !child->waited){
+			return child;
+		}
+	}
+	return NULL;
+}
 
 /* Waits for thread TID to die and returns its exit status.  If
  * it was terminated by the kernel (i.e. killed due to an
@@ -209,15 +236,37 @@ process_exec (void *f_name) {
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) {
+process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	// while(1);
-	for (int i = 0; i < 1000000000; i++){
 
+	struct thread *child = get_child_process(child_tid);
+
+	if (child == NULL){
+		return -1;
 	}
-	return -1;
+
+	child->waited = true;
+
+	/*
+	부모가 블록됨, 자식이 들어감, 자식이 나올때까지 접근 할 수 없음
+	다음은 process_exit sema_up
+	0 -> -1
+	*/
+	sema_down(&child->wait_sema);
+
+	int exit_status = child->exit_status;
+
+	list_remove(&child->child_elem);
+
+	/*
+	자식에게 완료 신호 보냄
+	-1 -> 0
+	*/
+	sema_up(&child->exit_sema);
+
+	return exit_status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
@@ -229,7 +278,35 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
+	/* 현재 프로세스의 모든 자식들을 고아로 만들기 */
+    while (!list_empty(&curr->child_list)) {
+        struct list_elem *e = list_pop_front(&curr->child_list);
+        struct thread *child = list_entry(e, struct thread, child_elem);
+        child->parent = NULL;                       /* 자식을 고아 프로세스로 만듦 */
+    }
+    
+    /* 부모 프로세스와의 동기화 */
+    if (curr->parent != NULL) {
+        /* 
+		부모에게 종료 신호 전송 
+		대기 중인 부모 프로세스 깨우기 
+		-1 -> 0
+		*/
+        sema_up(&curr->wait_sema);
+        
+        /* 
+		자식이 블록됨
+		부모가 종료 상태를 회수할 때까지 대기 
+		부모의 sema_up() 대기
+		다시 process_wait()으로 돌아감
+		0 -> -1
+		*/
+        sema_down(&curr->exit_sema);
+    }
+
 	process_cleanup ();
+
+    thread_exit(); // 스레드 종료
 }
 
 /* Free the current process's resources. */
@@ -334,7 +411,6 @@ void parsing_file_name(char *file_name, int *argc, char *argv[]){
 
 	for (token = strtok_r(file_name, " ", &save_ptr); token != NULL;  token = strtok_r(NULL, " ", &save_ptr)){
 		argv[(*argc)++] = token;
-		// *argc += 1;
 	}
 }
 
@@ -395,6 +471,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	int argc = 0;
 	char *argv[128];
 
+	// 파싱
 	parsing_file_name(file_name, &argc, argv);
 
 	/* Open executable file. */

@@ -28,6 +28,7 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 static struct list sleep_list; // 인터럽트된 스레드 보관할 리스트
+static struct list all_list;	// 모든 쓰레드를 추적할 리스트
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -115,11 +116,14 @@ thread_init (void) {
 	/* Init the globla thread context */
 	lock_init (&tid_lock);
 	list_init (&ready_list);
+	list_init (&all_list);   // all_list 초기화
 	list_init (&sleep_list); // 리스트 초기화
 	list_init (&destruction_req);
+	list_init(&all_list);	// 모든 쓰레드 리스트 초기화
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
+	list_push_back (&all_list, &initial_thread->all_elem);
 	init_thread (initial_thread, "main", PRI_DEFAULT);
 	initial_thread->status = THREAD_RUNNING;
 	initial_thread->tid = allocate_tid ();
@@ -307,6 +311,8 @@ thread_exit (void) {
 	/* Just set our status to dying and schedule another process.
 	   We will be destroyed during the call to schedule_tail(). */
 	intr_disable ();
+	struct thread *cur = thread_current();
+	list_remove(&cur->all_elem);
 	do_schedule (THREAD_DYING);
 	NOT_REACHED ();
 }
@@ -335,7 +341,6 @@ thread_sleep (int64_t ticks) {
 	struct thread *curr = thread_current ();
 	enum intr_level old_level;
 
-	// ASSERT (!intr_context ());
 	old_level = intr_disable ();
 	curr->wakeup_time = timer_ticks() + ticks; 	// 일어날 시간
 
@@ -548,7 +553,6 @@ void
 mlfqs_increase_recent_cpu(){
 	struct thread *cur = thread_current();
 	if (cur != idle_thread) cur->recent_cpu += F;
-	// if (cur != idle_thread) cur->recent_cpu =  FIXED_ADD_INT(cur->recent_cpu, 1);
 }
 
 void
@@ -579,32 +583,6 @@ mlfqs_recalc_priority(){
         struct thread *t = list_entry(e, struct thread, elem);
         mlfqs_calc_priority(t);
     }
-	
-	// 계속 안되면 해볼거
-	/*
-	for (e = list_begin(&ready_list); e != list_end(&ready_list); ) {
-        struct thread *t = list_entry(e, struct thread, elem);
-        int old_priority = t->priority;
-        mlfqs_calc_priority(t);
-        if (t->priority != old_priority) {
-            e = list_remove(e);  // 변경된 경우만 제거
-            list_insert_ordered(&ready_list, &t->elem, thread_compare_priority, NULL);
-        } else {
-            e = list_next(e);
-        }
-    }
-    // sleep_list와 현재 스레드도 유사하게 처리
-    // ...
-	*/
-
-	// ready_list 재정렬
-    // list_sort(&ready_list, thread_compare_priority, NULL);
-    
-    // sleep_list의 모든 스레드
-    // for (e = list_begin(&sleep_list); e != list_end(&sleep_list); e = list_next(e)) {
-    //     struct thread *t = list_entry(e, struct thread, elem);
-    //     mlfqs_calc_priority(t);
-    // }
     
     // 현재 실행 중인 스레드
     struct thread *cur = thread_current();
@@ -684,6 +662,17 @@ init_thread (struct thread *t, const char *name, int priority) {
 	if (thread_mlfqs){
 		mlfqs_calc_priority(t);
 	}
+
+	t->parent = NULL;					// 현재 부모는 NULL
+	list_init(&t->child_list);			// 자식 리스트 초기화
+
+	sema_init(&t->wait_sema, 0);		// 부모 대기
+	sema_init(&t->exit_sema, 0);		// 자식 대기
+
+	t->exit_status = -1;
+	t->waited = false;
+
+	list_push_back(&all_list, &t->all_elem);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -873,4 +862,23 @@ thread_check_preemption (void)
         thread_current ()->priority <
         list_entry (list_front (&ready_list), struct thread, elem)->priority)
         thread_yield ();
+}
+
+/* 모든 리스트를 돌면서 자식 프로세스를 찾는 함수 */
+struct thread *
+get_thread_tid(tid_t tid){
+	struct list_elem *e;
+	struct thread *found = NULL;
+
+	enum intr_level old_level = intr_disable(); // 인터럽트를 비활성화해서 일관성을 보장
+
+	for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)){
+		struct thread *t = list_entry(e, struct thread, all_elem);
+		if (t->tid == tid){
+			found = t;
+			break;
+		}
+	}
+	intr_set_level(old_level);
+	return found;
 }
