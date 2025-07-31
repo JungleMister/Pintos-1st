@@ -9,5 +9,11 @@ int process_exec (void *f_name);
 int process_wait (tid_t);
 void process_exit (void);
 void process_activate (struct thread *next);
+static struct thread * get_child_process(tid_t child_tid);
+
+struct dict_elem {
+    struct file *key;    // 부모의 원본
+    struct file *value;  // 자식의 복사본
+};
 
 #endif /* userprog/process.h */

@@ -11,6 +11,7 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "filesys/file.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -116,10 +117,9 @@ thread_init (void) {
 	/* Init the globla thread context */
 	lock_init (&tid_lock);
 	list_init (&ready_list);
-	list_init (&all_list);   // all_list 초기화
+	list_init (&all_list);   // 모든 쓰레드 리스트 초기화
 	list_init (&sleep_list); // 리스트 초기화
 	list_init (&destruction_req);
-	list_init(&all_list);	// 모든 쓰레드 리스트 초기화
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
@@ -206,6 +206,25 @@ thread_create (const char *name, int priority,
 	init_thread (t, name, priority);
 	tid = t->tid = allocate_tid ();
 
+	struct thread *cur = thread_current();
+	t->parent = cur;
+	list_push_back(&cur->child_list, &t->child_elem);
+
+	t->fdt = palloc_get_multiple(PAL_ZERO, 3);
+	if (t->fdt == NULL)
+		return TID_ERROR;
+
+	t->fd_idx = 2;
+
+	t->fdt[0] = STDIN_; 				// stdin 초기화
+	t->fdt[1] = STDOUT_;				// stdout 초기화
+
+	t->stdin_count = 1;
+	t->stdout_count = 1;
+
+	t->exit_status = 0;
+	t->waited = false;
+
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t) kernel_thread;
@@ -216,6 +235,7 @@ thread_create (const char *name, int priority,
 	t->tf.ss = SEL_KDSEG;
 	t->tf.cs = SEL_KCSEG;
 	t->tf.eflags = FLAG_IF;
+
 
 	/* Add to run queue. */
 	if (thread_current()->priority > t->priority){
@@ -668,9 +688,8 @@ init_thread (struct thread *t, const char *name, int priority) {
 
 	sema_init(&t->wait_sema, 0);		// 부모 대기
 	sema_init(&t->exit_sema, 0);		// 자식 대기
+	sema_init(&t->fork_sema, 0);
 
-	t->exit_status = -1;
-	t->waited = false;
 
 	list_push_back(&all_list, &t->all_elem);
 }
